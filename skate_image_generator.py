@@ -260,9 +260,11 @@ def _call_image_api(prompt: str) -> Optional[str]:
         import vertexai
         from vertexai.preview.vision_models import ImageGenerationModel
 
-        project_id = os.getenv("GOOGLE_CLOUD_PROJECT")
-        location = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
-        model_name = os.getenv("IMAGEN_MODEL", "imagen-4.0-generate-001")
+        import streamlit as st
+
+        project_id = st.secrets.get("GOOGLE_CLOUD_PROJECT", os.getenv("GOOGLE_CLOUD_PROJECT"))
+        location = st.secrets.get("GOOGLE_CLOUD_LOCATION", os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1"))
+        model_name = st.secrets.get("IMAGEN_MODEL", os.getenv("IMAGEN_MODEL", "imagen-4.0-generate-001"))
 
         if not project_id:
             print("[Imagen Error] GOOGLE_CLOUD_PROJECT env var is not set.")

@@ -426,17 +426,20 @@ if "force_generate_visual" not in st.session_state:
 if "_trigger_send" not in st.session_state:
     st.session_state._trigger_send = False
 
-GEMINI_API_KEY  = os.getenv("GEMINI_API_KEY")
-YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")
-GOOGLE_CSE_KEY  = os.getenv("GOOGLE_CSE_KEY")
-GOOGLE_CSE_CX   = os.getenv("GOOGLE_CSE_CX")
+def get_secret(name: str, default=None):
+    return st.secrets.get(name, os.getenv(name, default))
+
+GEMINI_API_KEY  = get_secret("GEMINI_API_KEY")
+YOUTUBE_API_KEY = get_secret("YOUTUBE_API_KEY")
+GOOGLE_CSE_KEY  = get_secret("GOOGLE_CSE_KEY")
+GOOGLE_CSE_CX   = get_secret("GOOGLE_CSE_CX")
 
 # Set to "off" to disable SafeSearch on image results.
 # Options: "active" | "off"
 IMAGE_SAFE_SEARCH: str = "active"
 
 # Set True to surface API error details in the UI (useful during development).
-DEBUG_MODE: bool = os.getenv("REMY_DEBUG", "false").lower() == "true"
+DEBUG_MODE: bool = str(st.secrets.get("REMY_DEBUG", os.getenv("REMY_DEBUG", "false"))).lower() == "true"
 
 try:
     genai.configure(api_key=GEMINI_API_KEY)
