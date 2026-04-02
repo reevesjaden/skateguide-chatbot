@@ -1638,6 +1638,11 @@ if final_input:
 
             # ── Extract tags, render clean text + cards ──
             clean_text, yt_queries, skate_queries, search_queries = extract_tags(full_response)
+
+            # 🔥 Auto-trigger image generation if Remy created a visual block
+            if "Image Prompt" in full_response or "VISUAL COACHING" in full_response:
+                st.session_state.force_generate_visual = True
+
             placeholder.markdown(clean_text)
 
             # If Remy embedded [SEARCH:] tags, run those searches now and show
@@ -1645,13 +1650,19 @@ if final_input:
             render_rich_cards(yt_queries, skate_queries, search_queries)
 
             # ── Generated Visuals ──
-            if should_trigger_generated_visual(final_input):
+            should_generate_visual = (
+                should_trigger_generated_visual(final_input)
+                or st.session_state.force_generate_visual
+            )
+
+            if should_generate_visual:
                 visual_result = generate_visual(
                     user_message=final_input,
                     skill_level=st.session_state.skill_level,
                     coaching_summary=clean_text,
                 )
                 render_generated_visual(visual_result)
+                st.session_state.force_generate_visual = False
 
         st.session_state.messages.append({
             "role":           "assistant",
