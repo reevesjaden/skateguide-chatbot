@@ -2746,7 +2746,13 @@ with st.sidebar:
     st.markdown("<div style='font-size:0.75rem; color:#6a85a8; text-transform:uppercase; letter-spacing:0.08em; margin-bottom:6px;'>Your Level</div>", unsafe_allow_html=True)
     level_options = ["Beginner 🌱", "Intermediate ⚡", "Advanced 🔥"]
     current_idx   = next((i for i, o in enumerate(level_options) if st.session_state.skill_level in o), 1)
-    new_level     = st.radio("level", level_options, index=current_idx, label_visibility="collapsed")
+    new_level = st.radio(
+        "level",
+        level_options,
+        index=current_idx,
+        label_visibility="collapsed",
+        key="level_selector_main"
+    )
     clean_level   = new_level.split(" ")[0]
     if clean_level != st.session_state.skill_level:
         st.session_state.skill_level = clean_level
