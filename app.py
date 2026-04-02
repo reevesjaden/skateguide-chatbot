@@ -1134,8 +1134,8 @@ with st.sidebar:
         "Current roller skating trends",
         "Recent skating competitions",
     ]
-    for prompt in quick_prompts:
-        if st.button(prompt, key=f"qp_{prompt}"):
+    for i, prompt in enumerate(quick_prompts):
+        if st.button(prompt, key=f"qp_{i}_{prompt}"):
             st.session_state._quick_prompt = prompt
             st.rerun()
 
@@ -2806,10 +2806,6 @@ with st.sidebar:
         "Current roller skating trends",
         "Recent skating competitions",
     ]
-    for prompt in quick_prompts:
-        if st.button(prompt, key=f"qp_{prompt}"):
-            st.session_state._quick_prompt = prompt
-            st.rerun()
 
     st.markdown("---")
 
