@@ -247,48 +247,42 @@ def _extract_setup_style(user_message: str) -> str:
 #   GOOGLE_CLOUD_LOCATION  — e.g. "us-central1"  (default if missing)
 #   IMAGEN_MODEL           — e.g. "imagen-4.0-generate-001" (default if missing)
 # ─────────────────────────────────────────────
-def _call_image_api(prompt: str) -> Optional[str]:
+def _call_image_api(prompt: str):
     """
-    Generate an image using Google Imagen via Vertex AI.
+    Generate an image using OpenAI (simple + works on Streamlit).
 
-    Saves the result as a local temp .png file and returns the file path.
-    Returns None if generation fails or env vars are not set.
+    Returns a local file path to the generated image.
     """
     try:
-        import os
-        import tempfile
-        import vertexai
-        from vertexai.preview.vision_models import ImageGenerationModel
-
         import streamlit as st
+        import base64
+        import tempfile
+        from openai import OpenAI
 
-        project_id = st.secrets.get("GOOGLE_CLOUD_PROJECT", os.getenv("GOOGLE_CLOUD_PROJECT"))
-        location = st.secrets.get("GOOGLE_CLOUD_LOCATION", os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1"))
-        model_name = st.secrets.get("IMAGEN_MODEL", os.getenv("IMAGEN_MODEL", "imagen-4.0-generate-001"))
-
-        if not project_id:
-            print("[Imagen Error] GOOGLE_CLOUD_PROJECT env var is not set.")
+        api_key = st.secrets.get("OPENAI_API_KEY")
+        if not api_key:
+            print("[Image Error] OPENAI_API_KEY not found in secrets.")
             return None
 
-        vertexai.init(project=project_id, location=location)
+        client = OpenAI(api_key=api_key)
 
-        model = ImageGenerationModel.from_pretrained(model_name)
-        result = model.generate_images(
+        result = client.images.generate(
+            model="gpt-image-1",
             prompt=prompt,
-            number_of_images=1,
+            size="1024x1024"
         )
 
-        if not getattr(result, "images", None):
-            print("[Imagen Error] No images returned from Vertex AI.")
-            return None
+        image_base64 = result.data[0].b64_json
+        image_bytes = base64.b64decode(image_base64)
 
         tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
-        result.images[0].save(tmp.name)
+        tmp.write(image_bytes)
         tmp.close()
+
         return tmp.name
 
     except Exception as exc:
-        print(f"[Imagen Error] {exc}")
+        print(f"[Image Error] {exc}")
         return None
 
 
