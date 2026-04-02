@@ -1141,7 +1141,7 @@ with st.sidebar:
 
     st.markdown("---")
 
-    if st.button("🔄 Reset Session"):
+    if st.button("🔄 Reset Session",  key="reset_session_btn"):
         st.session_state.chat             = None
         st.session_state.messages         = []
         st.session_state.msg_count        = 0
@@ -2809,7 +2809,7 @@ with st.sidebar:
 
     st.markdown("---")
 
-    if st.button("🔄 Reset Session"):
+    if st.button("🔄 Reset Session", key="reset_session_btn_sidebar"):
         st.session_state.chat             = None
         st.session_state.messages         = []
         st.session_state.msg_count        = 0
