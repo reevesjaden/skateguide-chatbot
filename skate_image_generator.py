@@ -20,11 +20,13 @@ touch, replace, or duplicate:
 It only adds generated visual coaching results that appear
 BELOW Remy's normal coaching text when triggered.
 
-Image API integration is supported through _call_image_api()
-using Google Imagen via Vertex AI.
+Image API integration is stubbed (image_url returns None).
+Drop in any image generation API (Imagen, DALL·E, Stability AI)
+by implementing _call_image_api() at the bottom of this file.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
 
+import re
 from typing import Optional
 
 
@@ -59,22 +61,22 @@ _VISUAL_TRIGGER_PHRASES = [
 
 # Known skating techniques that map to rich visual descriptions
 _TECHNIQUE_KEYWORDS = {
+    "spin":          "spin",
     "toe spin":      "toe spin",
     "one foot spin": "one-foot spin",
-    "spin":          "spin",
     "transition":    "transition",
     "t-stop":        "T-stop",
     "t stop":        "T-stop",
-    "crossovers":    "crossovers",
     "crossover":     "crossovers",
+    "crossovers":    "crossovers",
+    "manual":        "manual",
     "toe manual":    "toe manual",
     "heel manual":   "heel manual",
-    "manual":        "manual",
     "pivot":         "pivot",
-    "backwards":     "backward skating",
     "backward":      "backward skating",
-    "snapping":      "snapping",
+    "backwards":     "backward skating",
     "snap":          "snapping",
+    "snapping":      "snapping",
     "shuffle":       "shuffle",
     "jb":            "JB skating",
     "jam":           "jam skating",
@@ -110,6 +112,26 @@ _SETUP_KEYWORDS = [
     "setup recommendation",
 ]
 
+# Correction cues that suggest a corrected-form visual would help
+_CORRECTION_KEYWORDS = [
+    "knees",
+    "posture",
+    "stance",
+    "weight",
+    "chest",
+    "back",
+    "arms",
+    "balance",
+    "lean",
+    "hip",
+    "core",
+    "foot placement",
+    "ankle",
+    "upright",
+    "bend",
+    "form",
+]
+
 
 # ─────────────────────────────────────────────
 # TRIGGER DETECTION
@@ -121,7 +143,7 @@ def should_trigger_generated_visual(user_message: str) -> bool:
     visual output — technique diagram, step breakdown, setup visual, or
     corrected form.
     """
-    lower = (user_message or "").lower().strip()
+    lower = user_message.lower().strip()
 
     youtube_exclusions = ["tutorial", "tutorials", "video", "videos", "youtube", "watch"]
     if any(excl in lower for excl in youtube_exclusions):
@@ -154,7 +176,7 @@ def should_trigger_generated_visual(user_message: str) -> bool:
         "show me the steps",
     ]
 
-    return any(phrase in lower for phrase in (visual_phrases + breakdown_visual_phrases))
+    return any(phrase in lower for phrase in visual_phrases + breakdown_visual_phrases)
 
 
 def _detect_visual_type(user_message: str) -> str:
@@ -168,11 +190,13 @@ def _detect_visual_type(user_message: str) -> str:
     - "setup"       → skate setup for a style
     - "technique"   → default fallback
     """
-    lower = (user_message or "").lower()
+    lower = user_message.lower()
 
+    # Setup check first — most specific
     if any(kw in lower for kw in _SETUP_KEYWORDS):
         return "setup"
 
+    # Step-by-step signals
     if any(p in lower for p in [
         "step by step visually",
         "step-by-step visual",
@@ -182,6 +206,8 @@ def _detect_visual_type(user_message: str) -> str:
     ]):
         return "breakdown"
 
+    # Corrected form signals — only explicit visual correction requests.
+    # "fix my form" alone stays as normal coaching, not a visual trigger.
     correction_phrases = [
         "show me corrected form",
         "show corrected form",
@@ -195,6 +221,7 @@ def _detect_visual_type(user_message: str) -> str:
     if any(p in lower for p in correction_phrases):
         return "correction"
 
+    # Default: technique visual
     return "technique"
 
 
@@ -203,26 +230,22 @@ def _extract_technique(user_message: str) -> str:
     Pull the most relevant skating technique name from the message.
     Falls back to the raw message if no known keyword matches.
     """
-    lower = (user_message or "").lower()
-
-    # Prefer longer keywords first so "toe spin" wins over "spin"
-    for keyword, label in sorted(_TECHNIQUE_KEYWORDS.items(), key=lambda x: len(x[0]), reverse=True):
+    lower = user_message.lower()
+    for keyword, label in _TECHNIQUE_KEYWORDS.items():
         if keyword in lower:
             return label
-
+    # Fallback — strip trigger phrases and use whatever's left
     cleaned = lower
     for phrase in _VISUAL_TRIGGER_PHRASES:
         cleaned = cleaned.replace(phrase, "")
-
-    cleaned = cleaned.strip(" .,!?:;-")
-    return cleaned.title() or "Skating Technique"
+    return cleaned.strip().title() or "Skating Technique"
 
 
 def _extract_setup_style(user_message: str) -> str:
     """
     Pull the skating style from a setup request.
     """
-    lower = (user_message or "").lower()
+    lower = user_message.lower()
     styles = [
         "jam", "rhythm", "outdoor", "trail", "artistic",
         "derby", "park", "speed", "street", "freestyle",
@@ -235,54 +258,102 @@ def _extract_setup_style(user_message: str) -> str:
 
 
 # ─────────────────────────────────────────────
-# IMAGE API — Google Imagen via Vertex AI
+# IMAGE API — OpenAI DALL·E 3
 #
 # SETUP REQUIREMENTS:
-#   pip install google-cloud-aiplatform
-#   gcloud auth application-default login
-#   Enable Vertex AI API in Google Cloud Console
+#   pip install openai requests
 #
 # Required environment variables (.env):
-#   GOOGLE_CLOUD_PROJECT   — your GCP project ID
-#   GOOGLE_CLOUD_LOCATION  — e.g. "us-central1"  (default if missing)
-#   IMAGEN_MODEL           — e.g. "imagen-4.0-generate-001" (default if missing)
+#   OPENAI_API_KEY  — your OpenAI API key
+#
+# Optional:
+#   DALLE_MODEL     — defaults to "dall-e-3"
+#   DALLE_SIZE      — defaults to "1024x1024"
+#                     options: "1024x1024" | "1792x1024" | "1024x1792"
+#   DALLE_QUALITY   — defaults to "standard"  ("hd" for higher quality, costs more)
 # ─────────────────────────────────────────────
-def _call_image_api(prompt: str):
+def _call_image_api(prompt: str) -> Optional[str]:
     """
-    Generate an image using OpenAI (simple + works on Streamlit).
+    Generate an image using OpenAI DALL·E 3.
 
-    Returns a local file path to the generated image.
+    Downloads the result and saves it as a local temp .png file.
+    Returns the file path on success, None on any failure.
+    Never raises — all errors are printed for terminal debugging.
+
+    Parameters
+    ----------
+    prompt : str
+        The image generation prompt.
+
+    Returns
+    -------
+    str or None
+        Local file path to the generated .png, or None on failure.
     """
-    try:
-        import streamlit as st
-        import base64
-        import tempfile
-        from openai import OpenAI
+    import os
+    import tempfile
+    import requests as _requests
 
-        api_key = st.secrets.get("OPENAI_API_KEY")
-        if not api_key:
-            print("[Image Error] OPENAI_API_KEY not found in secrets.")
-            return None
-
-        client = OpenAI(api_key=api_key)
-
-        result = client.images.generate(
-            model="gpt-image-1",
-            prompt=prompt,
-            size="1024x1024"
+    # ── Step 1: env var check ──
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        print(
+            "[DALL·E] FAIL — OPENAI_API_KEY is not set. "
+            "Add it to your .env file and restart the app."
         )
+        return None
 
-        image_base64 = result.data[0].b64_json
-        image_bytes = base64.b64decode(image_base64)
+    model   = os.getenv("DALLE_MODEL",   "dall-e-3")
+    size    = os.getenv("DALLE_SIZE",    "1024x1024")
+    quality = os.getenv("DALLE_QUALITY", "standard")
 
-        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
-        tmp.write(image_bytes)
-        tmp.close()
+    print(f"[DALL·E] Generating — model={model!r} size={size!r} quality={quality!r}")
 
-        return tmp.name
+    # ── Step 2: import openai ──
+    try:
+        import openai
+    except ImportError:
+        print(
+            "[DALL·E] FAIL — openai package not installed. "
+            "Run: pip install openai"
+        )
+        return None
 
+    # ── Step 3: call DALL·E API ──
+    try:
+        client   = openai.OpenAI(api_key=api_key)
+        response = client.images.generate(
+            model=model,
+            prompt=prompt,
+            n=1,
+            size=size,
+            quality=quality,
+            response_format="url",
+        )
+        image_url = response.data[0].url
+    except openai.AuthenticationError as exc:
+        print(f"[DALL·E] FAIL — Invalid API key. Check OPENAI_API_KEY in your .env. ({exc})")
+        return None
+    except openai.RateLimitError as exc:
+        print(f"[DALL·E] FAIL — Rate limit or quota exceeded. ({exc})")
+        return None
+    except openai.BadRequestError as exc:
+        print(f"[DALL·E] FAIL — Prompt was rejected (likely content policy). ({exc})")
+        return None
     except Exception as exc:
-        print(f"[Image Error] {exc}")
+        print(f"[DALL·E] FAIL — API error ({type(exc).__name__}): {exc}")
+        return None
+
+    # ── Step 4: download image to temp file ──
+    try:
+        img_data = _requests.get(image_url, timeout=30).content
+        tmp      = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
+        tmp.write(img_data)
+        tmp.close()
+        print(f"[DALL·E] OK — image saved to {tmp.name!r}")
+        return tmp.name
+    except Exception as exc:
+        print(f"[DALL·E] FAIL — could not download/save image ({type(exc).__name__}): {exc}")
         return None
 
 
@@ -293,9 +364,9 @@ def _call_image_api(prompt: str):
 def _build_technique_prompt(technique: str, skill_level: str) -> str:
     """Build a coaching-style image generation prompt for a skating technique."""
     level_note = {
-        "Beginner": "simplified form, clearly visible basics, no advanced details",
+        "Beginner":     "simplified form, clearly visible basics, no advanced details",
         "Intermediate": "refined technique, good form, moderate detail",
-        "Advanced": "precise professional technique, full detail, competition-ready form",
+        "Advanced":     "precise professional technique, full detail, competition-ready form",
     }.get(skill_level, "moderate detail")
 
     return (
@@ -315,19 +386,20 @@ def _build_step_prompts(technique: str, skill_level: str) -> list:
     Build a list of step-by-step image prompts for a skating move.
     Returns a list of step dicts ready for the output format.
     """
+    # Step templates keyed by technique keyword
     step_templates = {
         "transition": [
-            ("Setup", "Roll forward, feet parallel, knees soft, weight centered.",
+            ("Setup",         "Roll forward, feet parallel, knees soft, weight centered.",
              f"Quad roller skater rolling forward in neutral stance, knees bent, weight centered, arms relaxed. {skill_level} level."),
-            ("Weight Shift", "Shift weight to your dominant foot before turning.",
-             f"Quad roller skater shifting weight to left or right foot, slight lean, other foot lifting slightly. {skill_level} level."),
-            ("The Turn", "Rotate hips and shoulders together as one unit.",
-             f"Quad roller skater mid-transition, hips rotating, shoulders following, one foot pivoting. {skill_level} level."),
+            ("Weight Shift",  "Shift weight to your dominant foot before turning.",
+             f"Quad roller skater shifting weight to left/right foot, slight lean, other foot lifting slightly. {skill_level} level."),
+            ("The Turn",      "Rotate hips and shoulders together as one unit.",
+             f"Quad roller skater mid-transition, hips rotating, shoulders following, one foot pivoting on toe stop. {skill_level} level."),
             ("Land Backward", "Find your balance rolling backward, knees still soft.",
              f"Quad roller skater rolling backward confidently, knees bent, weight centered, arms out for balance. {skill_level} level."),
         ],
         "T-stop": [
-            ("Setup", "Roll forward at a comfortable speed, feet parallel.",
+            ("Setup",         "Roll forward at a comfortable speed, feet parallel.",
              f"Quad roller skater rolling forward, relaxed posture, moderate speed. {skill_level} level."),
             ("Rear Foot Position", "Bring your rear foot perpendicular to your direction of travel.",
              f"Quad roller skater with rear foot turning 90 degrees, beginning to drag. {skill_level} level."),
@@ -337,27 +409,28 @@ def _build_step_prompts(technique: str, skill_level: str) -> list:
              f"Quad roller skater fully stopped in T-stop position, front foot forward, rear foot perpendicular. {skill_level} level."),
         ],
         "crossovers": [
-            ("Start Position", "Lean slightly into the curve, weight on the outside edge.",
+            ("Start Position", "Lean slightly into the curve, weight on outside edge.",
              f"Quad roller skater leaning into a turn, weight on outside edges, arms extended. {skill_level} level."),
-            ("Cross Over", "Lift the outside foot and cross it over the inside foot.",
+            ("Cross Over",    "Lift the outside foot and cross it over the inside foot.",
              f"Quad roller skater crossing outside foot over inside foot mid-stride. {skill_level} level."),
-            ("Plant & Push", "Plant the crossed foot and push outward with the inside foot.",
+            ("Plant & Push",  "Plant the crossed foot and push outward with the inside foot.",
              f"Quad roller skater planting crossed foot, pushing off with inside foot for power. {skill_level} level."),
-            ("Recover", "Bring feet back to parallel and repeat the cross.",
+            ("Recover",       "Bring feet back to parallel and repeat the cross.",
              f"Quad roller skater recovering to parallel position, flowing into the next crossover. {skill_level} level."),
         ],
         "backward skating": [
-            ("Setup", "Face forward, then push off one foot to begin rolling backward.",
+            ("Setup",         "Face forward, then push off one foot to begin rolling backward.",
              f"Quad roller skater in starting position, about to initiate backward rolling. {skill_level} level."),
-            ("C-Cut", "Use a C-shaped push with one foot to propel yourself backward.",
+            ("C-Cut",         "Use a C-shaped push with one foot to propel yourself backward.",
              f"Quad roller skater executing a C-cut stroke backward, one foot carving outward. {skill_level} level."),
             ("Balance Check", "Keep knees bent, chest up, and look over your shoulder.",
              f"Quad roller skater rolling backward with good posture, knees bent, looking back safely. {skill_level} level."),
-            ("Build Speed", "Alternate C-cuts on each foot for consistent backward momentum.",
+            ("Build Speed",   "Alternate C-cuts on each foot for consistent backward momentum.",
              f"Quad roller skater alternating C-cuts backward, gaining speed with controlled form. {skill_level} level."),
         ],
     }
 
+    # Find best matching template
     lower_technique = technique.lower()
     matched_steps = None
     for key, steps in step_templates.items():
@@ -365,25 +438,26 @@ def _build_step_prompts(technique: str, skill_level: str) -> list:
             matched_steps = steps
             break
 
+    # Generic fallback steps
     if not matched_steps:
         matched_steps = [
-            ("Setup", f"Get into starting position for {technique}.",
+            ("Setup",        f"Get into starting position for {technique}.",
              f"Quad roller skater in starting position preparing for {technique}. {skill_level} level."),
-            ("Initiate", "Begin the movement with proper weight transfer.",
+            ("Initiate",     f"Begin the movement with proper weight transfer.",
              f"Quad roller skater initiating {technique}, weight shifting, knees bent. {skill_level} level."),
-            ("Execute", "Follow through the core motion with control.",
+            ("Execute",      f"Follow through the core motion with control.",
              f"Quad roller skater mid-execution of {technique}, full technique on display. {skill_level} level."),
-            ("Finish", "Recover to a balanced, neutral stance.",
+            ("Finish",       f"Recover to a balanced, neutral stance.",
              f"Quad roller skater completing {technique}, landing balanced, knees soft. {skill_level} level."),
         ]
 
     return [
         {
-            "step": i + 1,
-            "title": title,
-            "caption": caption,
+            "step":         i + 1,
+            "title":        title,
+            "caption":      caption,
             "image_prompt": prompt,
-            "image_url": _call_image_api(prompt),
+            "image_url":    _call_image_api(prompt),
         }
         for i, (title, caption, prompt) in enumerate(matched_steps)
     ]
@@ -391,39 +465,38 @@ def _build_step_prompts(technique: str, skill_level: str) -> list:
 
 def _build_correction_prompt(coaching_summary: str, skill_level: str) -> str:
     """Build a corrected-form image prompt from Remy's coaching text."""
-    summary = (coaching_summary or "")[:200]
     return (
-        "A clear coaching illustration of a quad roller skater demonstrating correct form. "
-        "The skater shows properly bent knees, upright chest, centered weight distribution, "
-        "relaxed arms, stable ankle alignment, and confident balanced posture. "
-        f"This corrected version addresses these coaching notes: '{summary}'. "
+        f"A clear coaching illustration of a quad roller skater demonstrating CORRECT form. "
+        f"The skater shows: properly bent knees, upright chest, centered weight distribution, "
+        f"relaxed arms, stable ankle alignment, and confident balanced posture. "
+        f"This is the corrected version addressing these coaching notes: '{coaching_summary[:200]}'. "
         f"Clean background, coaching diagram style, {skill_level} skill level context. "
-        "No text overlays. High quality. Photorealistic or clean illustration."
+        f"No text overlays. High quality. Photorealistic or clean illustration."
     )
 
 
 def _build_setup_prompt(style: str, skill_level: str) -> str:
     """Build a skate setup image prompt for a given skating style."""
     setup_details = {
-        "Jam": "low-cut boot for ankle mobility, hard wheels (95A-101A), loose trucks, small toe stop",
-        "Rhythm": "mid-cut boot, medium-hard wheels (88A-95A), standard plate, standard toe stop",
-        "Outdoor": "high-cut boot for ankle support, soft outdoor wheels (76A-85A), loose trucks, no toe stop or small plug",
-        "Artistic": "high-cut stiff boot, hard precision wheels, tight trucks, large toe stop",
-        "Derby": "low-cut boot, medium-hard wheels, wide plate, small plug instead of a toe stop",
-        "Park": "low-cut boot, hard wheels (97A-101A), loose trucks, small plug or no toe stop",
-        "Speed": "low-cut speed boot, hard wheels (98A-101A), long plate, no toe stop",
-        "Street": "mid-cut boot, hard wheels (95A-101A), wide plate, small toe stop",
+        "Jam":       "low-cut boot for ankle mobility, hard wheels (95A-101A), loose trucks, small toe stop",
+        "Rhythm":    "mid-cut boot, medium-hard wheels (88A-95A), standard plate, standard toe stop",
+        "Outdoor":   "high-cut boot for ankle support, soft outdoor wheels (76A-85A), loose trucks, no toe stop or small plug",
+        "Artistic":  "high-cut stiff boot, hard precision wheels, tight trucks, large toe stop",
+        "Derby":     "low-cut boot, outdoor-style wheels (88A), wide plate, no toe stop (small plug)",
+        "Park":      "low-cut boot, hard wheels (97A-101A), loose trucks, no toe stop",
+        "Speed":     "low-cut speed boot, hard wheels (98A-101A), long plate, no toe stop",
+        "Street":    "mid-cut boot, hard wheels (95A-101A), wide plate, small toe stop",
         "Freestyle": "low or mid-cut boot, medium-hard wheels (88A-95A), standard plate",
-        "Beginner": "mid-cut supportive boot, medium wheels (82A-88A), standard plate, standard toe stop",
-        "General": "all-purpose quad skate with medium-hardness wheels and standard setup",
+        "Beginner":  "mid-cut supportive boot, medium wheels (82A-88A), standard plate, standard toe stop",
+        "General":   "all-purpose quad skate with medium-hardness wheels and standard setup",
     }
     detail = setup_details.get(style, setup_details["General"])
 
     return (
         f"A detailed product-style illustration of a complete {style} roller skate setup. "
         f"Setup specs: {detail}. "
-        "Show both skates from a 3/4 angle, clearly displaying the boot, plate, wheels, and toe stop. "
-        "Clean white background, product photography style, high detail. "
+        f"Show both skates from a 3/4 angle, clearly displaying the boot, plate, wheels, and toe stop. "
+        f"Clean white background, product photography style, high detail. "
         f"Label key components if possible. {skill_level} skater context."
     )
 
@@ -438,20 +511,39 @@ def generate_technique_visual(
 ) -> dict:
     """
     Generate a coaching visual for a single skating technique.
+
+    Parameters
+    ----------
+    user_message : str
+        The user's message (e.g. "show me proper backward skating form").
+    skill_level : str
+        "Beginner", "Intermediate", or "Advanced".
+
+    Returns
+    -------
+    dict
+        Structured result with title, description, image_prompt, image_url.
     """
     try:
-        technique = _extract_technique(user_message)
+        technique    = _extract_technique(user_message)
         image_prompt = _build_technique_prompt(technique, skill_level)
-        image_url = _call_image_api(image_prompt)
+        image_url    = _call_image_api(image_prompt)
+
+        if image_url is None:
+            return _error_result(
+                "technique_visual",
+                "Image generation failed — check terminal logs for details "
+                "(missing GOOGLE_CLOUD_PROJECT, auth error, or Vertex API exception).",
+            )
 
         return {
-            "success": True,
-            "type": "technique_visual",
-            "title": f"{technique} — Technique Visual",
-            "description": f"A coaching-style visual showing correct {technique} posture, foot placement, and balance.",
+            "success":      True,
+            "type":         "technique_visual",
+            "title":        f"{technique} — Technique Visual",
+            "description":  f"A coaching-style visual showing correct {technique} posture, foot placement, and balance.",
             "image_prompt": image_prompt,
-            "image_url": image_url,
-            "steps": [],
+            "image_url":    image_url,
+            "steps":        [],
         }
     except Exception as exc:
         return _error_result("technique_visual", str(exc))
@@ -463,19 +555,32 @@ def generate_trick_breakdown_visuals(
 ) -> dict:
     """
     Generate a step-by-step visual breakdown for a skating move.
+
+    Parameters
+    ----------
+    user_message : str
+        The user's message (e.g. "break down the transition step by step visually").
+    skill_level : str
+        "Beginner", "Intermediate", or "Advanced".
+
+    Returns
+    -------
+    dict
+        Structured result with a list of steps, each containing
+        title, caption, image_prompt, and image_url.
     """
     try:
         technique = _extract_technique(user_message)
-        steps = _build_step_prompts(technique, skill_level)
+        steps     = _build_step_prompts(technique, skill_level)
 
         return {
-            "success": True,
-            "type": "trick_breakdown",
-            "title": f"{technique} — Step-by-Step Breakdown",
-            "description": f"A {len(steps)}-step visual breakdown of {technique} for a {skill_level} skater.",
+            "success":      True,
+            "type":         "trick_breakdown",
+            "title":        f"{technique} — Step-by-Step Breakdown",
+            "description":  f"A {len(steps)}-step visual breakdown of {technique} for a {skill_level} skater.",
             "image_prompt": None,
-            "image_url": None,
-            "steps": steps,
+            "image_url":    None,
+            "steps":        steps,
         }
     except Exception as exc:
         return _error_result("trick_breakdown", str(exc))
@@ -487,22 +592,47 @@ def generate_corrected_form_visual(
 ) -> dict:
     """
     Generate a corrected-form visual from Remy's coaching text.
+
+    This is an ENHANCEMENT LAYER only. It does not replace or
+    duplicate the main app's photo/video analysis via Gemini.
+    It takes the text coaching output and visualises what correct
+    form should look like based on those corrections.
+
+    Parameters
+    ----------
+    coaching_summary : str
+        Text from Remy's coaching response describing corrections
+        (e.g. "knees need to bend more, chest should stay upright").
+    skill_level : str
+        "Beginner", "Intermediate", or "Advanced".
+
+    Returns
+    -------
+    dict
+        Structured result with a corrected-form image prompt.
     """
     try:
         if not coaching_summary or not coaching_summary.strip():
             return _error_result("corrected_form", "No coaching summary provided.")
 
         image_prompt = _build_correction_prompt(coaching_summary, skill_level)
-        image_url = _call_image_api(image_prompt)
+        image_url    = _call_image_api(image_prompt)
+
+        if image_url is None:
+            return _error_result(
+                "corrected_form",
+                "Image generation failed — check terminal logs for details "
+                "(missing GOOGLE_CLOUD_PROJECT, auth error, or Vertex API exception).",
+            )
 
         return {
-            "success": True,
-            "type": "corrected_form",
-            "title": "Corrected Form Visual",
-            "description": "A visual showing what correct skating form looks like based on Remy's coaching notes.",
+            "success":      True,
+            "type":         "corrected_form",
+            "title":        "Corrected Form Visual",
+            "description":  "A visual showing what correct skating form looks like based on Remy's coaching notes.",
             "image_prompt": image_prompt,
-            "image_url": image_url,
-            "steps": [],
+            "image_url":    image_url,
+            "steps":        [],
         }
     except Exception as exc:
         return _error_result("corrected_form", str(exc))
@@ -514,20 +644,39 @@ def generate_skate_setup_visual(
 ) -> dict:
     """
     Generate a visual for a skate setup based on skating style.
+
+    Parameters
+    ----------
+    user_message : str
+        The user's message (e.g. "show me a jam skating setup").
+    skill_level : str
+        "Beginner", "Intermediate", or "Advanced".
+
+    Returns
+    -------
+    dict
+        Structured result with setup description and image prompt.
     """
     try:
-        style = _extract_setup_style(user_message)
+        style        = _extract_setup_style(user_message)
         image_prompt = _build_setup_prompt(style, skill_level)
-        image_url = _call_image_api(image_prompt)
+        image_url    = _call_image_api(image_prompt)
+
+        if image_url is None:
+            return _error_result(
+                "setup_visual",
+                "Image generation failed — check terminal logs for details "
+                "(missing GOOGLE_CLOUD_PROJECT, auth error, or Vertex API exception).",
+            )
 
         return {
-            "success": True,
-            "type": "setup_visual",
-            "title": f"{style} Skating Setup",
-            "description": f"A visual breakdown of a recommended {style} quad skate setup for a {skill_level} skater.",
+            "success":      True,
+            "type":         "setup_visual",
+            "title":        f"{style} Skating Setup",
+            "description":  f"A visual breakdown of a recommended {style} quad skate setup for a {skill_level} skater.",
             "image_prompt": image_prompt,
-            "image_url": image_url,
-            "steps": [],
+            "image_url":    image_url,
+            "steps":        [],
         }
     except Exception as exc:
         return _error_result("setup_visual", str(exc))
@@ -541,16 +690,34 @@ def generate_visual(
     """
     Master dispatcher — detects which visual type to generate and
     calls the appropriate function automatically.
+
+    Use this as the single entry point from your main app.
+
+    Parameters
+    ----------
+    user_message : str
+        The raw user message.
+    skill_level : str
+        "Beginner", "Intermediate", or "Advanced".
+    coaching_summary : str
+        Optional — pass Remy's response text to enable corrected-form
+        visuals when the user asks for correction-related visuals.
+
+    Returns
+    -------
+    dict
+        Structured visual result from the appropriate generator.
     """
     visual_type = _detect_visual_type(user_message)
 
     if visual_type == "setup":
         return generate_skate_setup_visual(user_message, skill_level)
-    if visual_type == "breakdown":
+    elif visual_type == "breakdown":
         return generate_trick_breakdown_visuals(user_message, skill_level)
-    if visual_type == "correction" and coaching_summary:
+    elif visual_type == "correction" and coaching_summary:
         return generate_corrected_form_visual(coaching_summary, skill_level)
-    return generate_technique_visual(user_message, skill_level)
+    else:
+        return generate_technique_visual(user_message, skill_level)
 
 
 # ─────────────────────────────────────────────
@@ -560,14 +727,14 @@ def generate_visual(
 def _error_result(visual_type: str, error_msg: str) -> dict:
     """Return a structured error result that won't crash the caller."""
     return {
-        "success": False,
-        "type": visual_type,
-        "title": "Visual Unavailable",
-        "description": f"Could not generate visual: {error_msg}",
+        "success":      False,
+        "type":         visual_type,
+        "title":        "Visual Unavailable",
+        "description":  f"Could not generate visual: {error_msg}",
         "image_prompt": None,
-        "image_url": None,
-        "steps": [],
-        "error": error_msg,
+        "image_url":    None,
+        "steps":        [],
+        "error":        error_msg,
     }
 
 
@@ -581,6 +748,13 @@ def render_generated_visual(visual_result: dict) -> None:
 
     Call this INSIDE your st.chat_message("assistant") block,
     AFTER placeholder.markdown(clean_text) and AFTER render_rich_cards().
+
+    It uses only standard Streamlit markdown — no new CSS required.
+
+    Parameters
+    ----------
+    visual_result : dict
+        The dict returned by any generate_* function.
     """
     try:
         import streamlit as st
@@ -588,14 +762,25 @@ def render_generated_visual(visual_result: dict) -> None:
         print("[skate_image_generator] Streamlit not available — skipping render.")
         return
 
-    if not visual_result or not visual_result.get("success"):
+    if not visual_result:
+        return
+
+    if not visual_result.get("success"):
+        # Show the failure reason so the user knows generation was attempted
+        # but did not produce an image — not a silent no-op.
+        err = visual_result.get("error", "Unknown error.")
+        st.error(
+            f"🎨 Visual generation failed — {err}",
+            icon="⚠️",
+        )
         return
 
     title = visual_result.get("title", "Visual")
-    desc = visual_result.get("description", "")
-    url = visual_result.get("image_url")
+    desc  = visual_result.get("description", "")
+    url   = visual_result.get("image_url")
     steps = visual_result.get("steps", [])
 
+    # Section divider
     st.markdown(
         "<div style='border-top:1px solid #1a2840; margin:16px 0 10px;'></div>",
         unsafe_allow_html=True,
@@ -614,9 +799,11 @@ def render_generated_visual(visual_result: dict) -> None:
             unsafe_allow_html=True,
         )
 
+    # Show generated image if available
     if url:
         st.image(url, use_container_width=True)
     else:
+        # No image API yet — show the prompt so it's useful during dev
         prompt = visual_result.get("image_prompt", "")
         if prompt:
             st.markdown(
@@ -628,13 +815,14 @@ def render_generated_visual(visual_result: dict) -> None:
                 unsafe_allow_html=True,
             )
 
+    # Step-by-step breakdown
     if steps:
         for step in steps:
-            n = step.get("step", "")
-            stitle = step.get("title", "")
+            n       = step.get("step", "")
+            stitle  = step.get("title", "")
             caption = step.get("caption", "")
             sprompt = step.get("image_prompt", "")
-            surl = step.get("image_url")
+            surl    = step.get("image_url")
 
             st.markdown(
                 f"<div style='background:#0c1220; border:1px solid #1a2840; "

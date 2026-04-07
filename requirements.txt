@@ -1,7 +1,8 @@
 streamlit
 google-generativeai
 python-dotenv
-requests
 Pillow
-opencv-python-headless
+requests
+opencv-python
 openai
+google-cloud-aiplatform
