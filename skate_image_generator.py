@@ -567,7 +567,7 @@ def generate_technique_visual(
             return _error_result(
                 "technique_visual",
                 "Image generation failed — check terminal logs for details "
-                "(missing GOOGLE_CLOUD_PROJECT, auth error, or Vertex API exception).",
+                "(check OPENAI_API_KEY in Streamlit secrets, or see terminal logs for details).",
             )
 
         return {
@@ -656,7 +656,7 @@ def generate_corrected_form_visual(
             return _error_result(
                 "corrected_form",
                 "Image generation failed — check terminal logs for details "
-                "(missing GOOGLE_CLOUD_PROJECT, auth error, or Vertex API exception).",
+                "(check OPENAI_API_KEY in Streamlit secrets, or see terminal logs for details).",
             )
 
         return {
@@ -700,7 +700,7 @@ def generate_skate_setup_visual(
             return _error_result(
                 "setup_visual",
                 "Image generation failed — check terminal logs for details "
-                "(missing GOOGLE_CLOUD_PROJECT, auth error, or Vertex API exception).",
+                "(check OPENAI_API_KEY in Streamlit secrets, or see terminal logs for details).",
             )
 
         return {
