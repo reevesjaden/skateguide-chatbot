@@ -150,22 +150,49 @@ def should_trigger_generated_visual(user_message: str) -> bool:
         return False
 
     visual_phrases = [
+        # explicit show/show me phrases
         "show me what",
         "show me how it looks",
         "show me how it should look",
         "show me proper",
         "show me correct",
-        "what does it look like",
-        "give me a visual",
+        "show me the visual",
+        "show me a visual",
+        "show me an image",
+        "show me a picture",
+        # create / make / generate
+        "create the visual",
+        "create a visual",
+        "create an image",
+        "make a visual",
+        "make an image",
+        "generate a visual",
         "generate an image",
+        "generate the visual",
+        # give / send
+        "give me a visual",
+        "give me an image",
+        "give me a picture",
+        "send me a visual",
+        # can you
+        "can you create",
+        "can you generate",
+        "can you make",
+        "can you show me",
+        # posture / form
         "show correct posture",
         "show me proper form",
         "show proper form",
+        # setup
         "show me a skate setup",
         "show me a setup",
+        # misc
+        "what does it look like",
         "visualize",
         "diagram",
         "step-by-step visual",
+        "i want to see",
+        "let me see",
     ]
 
     breakdown_visual_phrases = [
@@ -294,18 +321,25 @@ def _call_image_api(prompt: str) -> Optional[str]:
     import tempfile
     import requests as _requests
 
-    # ── Step 1: env var check ──
-    api_key = os.getenv("OPENAI_API_KEY")
+    # ── Step 1: env var check (st.secrets first for Streamlit Cloud, then .env) ──
+    try:
+        import streamlit as _st
+        api_key = _st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+        model   = _st.secrets.get("DALLE_MODEL")    or os.getenv("DALLE_MODEL",   "dall-e-3")
+        size    = _st.secrets.get("DALLE_SIZE")     or os.getenv("DALLE_SIZE",    "1024x1024")
+        quality = _st.secrets.get("DALLE_QUALITY")  or os.getenv("DALLE_QUALITY", "standard")
+    except Exception:
+        api_key = os.getenv("OPENAI_API_KEY")
+        model   = os.getenv("DALLE_MODEL",   "dall-e-3")
+        size    = os.getenv("DALLE_SIZE",    "1024x1024")
+        quality = os.getenv("DALLE_QUALITY", "standard")
+
     if not api_key:
         print(
-            "[DALL·E] FAIL — OPENAI_API_KEY is not set. "
-            "Add it to your .env file and restart the app."
+            "[DALL·E] FAIL — OPENAI_API_KEY not found in st.secrets or .env. "
+            "Add it to your Streamlit Cloud secrets or .env file."
         )
         return None
-
-    model   = os.getenv("DALLE_MODEL",   "dall-e-3")
-    size    = os.getenv("DALLE_SIZE",    "1024x1024")
-    quality = os.getenv("DALLE_QUALITY", "standard")
 
     print(f"[DALL·E] Generating — model={model!r} size={size!r} quality={quality!r}")
 
@@ -807,11 +841,16 @@ def render_generated_visual(visual_result: dict) -> None:
         prompt = visual_result.get("image_prompt", "")
         if prompt:
             st.markdown(
-                f"<div style='background:#101828; border:1px dashed #1a2840; "
-                f"border-radius:10px; padding:12px 15px; font-size:0.78rem; "
-                f"color:#6a85a8; margin-bottom:8px;'>"
-                f"<strong style='color:#c6ff4a;'>📐 Image Prompt (connect an image API to generate)</strong><br>"
-                f"<em>{prompt[:300]}{'…' if len(prompt) > 300 else ''}</em></div>",
+                f"<div style='background:#101828; border:1px dashed #c6ff4a44; "
+                f"border-radius:12px; padding:16px 18px; margin-bottom:10px;'>"
+                f"<div style='font-size:0.72rem; text-transform:uppercase; "
+                f"letter-spacing:0.08em; color:#c6ff4a; margin-bottom:8px;'>"
+                f"⚠️ Image API not connected — visual prompt ready</div>"
+                f"<div style='font-size:0.85rem; color:#eef4ff; line-height:1.6;'>"
+                f"{prompt[:500]}{'…' if len(prompt) > 500 else ''}</div>"
+                f"<div style='font-size:0.72rem; color:#6a85a8; margin-top:10px;'>"
+                f"Add OPENAI_API_KEY to your Streamlit secrets to generate this image.</div>"
+                f"</div>",
                 unsafe_allow_html=True,
             )
 
