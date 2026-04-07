@@ -3,6 +3,6 @@ google-generativeai
 python-dotenv
 Pillow
 requests
-opencv-python
+opencv-python-headless
 openai
 google-cloud-aiplatform
