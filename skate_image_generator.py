@@ -299,95 +299,92 @@ def _extract_setup_style(user_message: str) -> str:
 #                     options: "1024x1024" | "1792x1024" | "1024x1792"
 #   DALLE_QUALITY   — defaults to "standard"  ("hd" for higher quality, costs more)
 # ─────────────────────────────────────────────
-def _call_image_api(prompt: str) -> Optional[str]:
+def _call_image_api(prompt: str) -> Optional[bytes]:
     """
-    Generate an image using OpenAI DALL·E 3.
+    Generate an image using OpenAI's image API.
 
-    Downloads the result and saves it as a local temp .png file.
-    Returns the file path on success, None on any failure.
-    Never raises — all errors are printed for terminal debugging.
+    Defaults to gpt-image-1 (more accurate instruction-following than DALL-E 3).
+    Falls back gracefully to DALL-E 3 if gpt-image-1 is unavailable.
+    Returns raw PNG/JPEG bytes on success, None on any failure.
 
-    Parameters
-    ----------
-    prompt : str
-        The image generation prompt.
-
-    Returns
-    -------
-    str or None
-        Local file path to the generated .png, or None on failure.
+    Model behaviour:
+    - gpt-image-1  → returns b64_json (decoded here to bytes); quality: low/medium/high/auto
+    - dall-e-3     → returns a URL (downloaded here to bytes);  quality: standard/hd
     """
     import os
-    import tempfile
+    import base64
     import requests as _requests
 
-    # ── Step 1: env var check (st.secrets first for Streamlit Cloud, then .env) ──
+    # ── Load config (Streamlit secrets take priority over .env) ──
     try:
         import streamlit as _st
         api_key = _st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
-        model   = _st.secrets.get("DALLE_MODEL")    or os.getenv("DALLE_MODEL",   "dall-e-3")
-        size    = _st.secrets.get("DALLE_SIZE")     or os.getenv("DALLE_SIZE",    "1024x1024")
-        quality = _st.secrets.get("DALLE_QUALITY")  or os.getenv("DALLE_QUALITY", "standard")
+        model   = _st.secrets.get("IMAGE_MODEL")    or os.getenv("IMAGE_MODEL",   "gpt-image-1")
+        size    = _st.secrets.get("IMAGE_SIZE")     or os.getenv("IMAGE_SIZE",    "1024x1024")
+        quality = _st.secrets.get("IMAGE_QUALITY")  or os.getenv("IMAGE_QUALITY", "high")
     except Exception:
         api_key = os.getenv("OPENAI_API_KEY")
-        model   = os.getenv("DALLE_MODEL",   "dall-e-3")
-        size    = os.getenv("DALLE_SIZE",    "1024x1024")
-        quality = os.getenv("DALLE_QUALITY", "standard")
+        model   = os.getenv("IMAGE_MODEL",   "gpt-image-1")
+        size    = os.getenv("IMAGE_SIZE",    "1024x1024")
+        quality = os.getenv("IMAGE_QUALITY", "high")
 
     if not api_key:
-        print(
-            "[DALL·E] FAIL — OPENAI_API_KEY not found in st.secrets or .env. "
-            "Add it to your Streamlit Cloud secrets or .env file."
-        )
+        print("[Image] FAIL — OPENAI_API_KEY not found in st.secrets or .env.")
         return None
 
-    print(f"[DALL·E] Generating — model={model!r} size={size!r} quality={quality!r}")
+    print(f"[Image] Generating — model={model!r} size={size!r} quality={quality!r}")
 
-    # ── Step 2: import openai ──
     try:
         import openai
     except ImportError:
-        print(
-            "[DALL·E] FAIL — openai package not installed. "
-            "Run: pip install openai"
-        )
+        print("[Image] FAIL — openai package not installed. Run: pip install openai")
         return None
 
-    # ── Step 3: call DALL·E API ──
     try:
-        client   = openai.OpenAI(api_key=api_key)
-        response = client.images.generate(
-            model=model,
-            prompt=prompt,
-            n=1,
-            size=size,
-            quality=quality,
-            response_format="url",
-        )
-        image_url = response.data[0].url
+        client = openai.OpenAI(api_key=api_key)
+
+        if model == "dall-e-3":
+            # DALL-E 3: returns a URL, quality values are "standard" or "hd"
+            response  = client.images.generate(
+                model=model, prompt=prompt, n=1, size=size,
+                quality=quality, response_format="url",
+            )
+            img_data = _requests.get(response.data[0].url, timeout=30).content
+        else:
+            # gpt-image-1 (and future models): returns base64, quality: low/medium/high/auto
+            response = client.images.generate(
+                model=model, prompt=prompt, n=1, size=size, quality=quality,
+            )
+            img_data = base64.b64decode(response.data[0].b64_json)
+
+        print(f"[Image] OK — {model} generated {len(img_data)} bytes")
+        return img_data
+
     except openai.AuthenticationError as exc:
-        print(f"[DALL·E] FAIL — Invalid API key. Check OPENAI_API_KEY in your .env. ({exc})")
+        print(f"[Image] FAIL — Invalid API key. ({exc})")
         return None
     except openai.RateLimitError as exc:
-        print(f"[DALL·E] FAIL — Rate limit or quota exceeded. ({exc})")
+        print(f"[Image] FAIL — Rate limit or quota exceeded. ({exc})")
         return None
     except openai.BadRequestError as exc:
-        print(f"[DALL·E] FAIL — Prompt was rejected (likely content policy). ({exc})")
+        # gpt-image-1 may not yet be available on this account — fall back to DALL-E 3
+        if model != "dall-e-3" and "model" in str(exc).lower():
+            print(f"[Image] {model} unavailable, falling back to dall-e-3. ({exc})")
+            try:
+                response = client.images.generate(
+                    model="dall-e-3", prompt=prompt, n=1, size=size,
+                    quality="standard", response_format="url",
+                )
+                img_data = _requests.get(response.data[0].url, timeout=30).content
+                print(f"[Image] OK — dall-e-3 fallback {len(img_data)} bytes")
+                return img_data
+            except Exception as fb_exc:
+                print(f"[Image] FAIL — dall-e-3 fallback also failed. ({fb_exc})")
+                return None
+        print(f"[Image] FAIL — Request rejected (content policy?). ({exc})")
         return None
     except Exception as exc:
-        print(f"[DALL·E] FAIL — API error ({type(exc).__name__}): {exc}")
-        return None
-
-    # ── Step 4: download image to temp file ──
-    try:
-        img_data = _requests.get(image_url, timeout=30).content
-        tmp      = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
-        tmp.write(img_data)
-        tmp.close()
-        print(f"[DALL·E] OK — image saved to {tmp.name!r}")
-        return tmp.name
-    except Exception as exc:
-        print(f"[DALL·E] FAIL — could not download/save image ({type(exc).__name__}): {exc}")
+        print(f"[Image] FAIL — API error ({type(exc).__name__}): {exc}")
         return None
 
 
@@ -542,6 +539,7 @@ def _build_setup_prompt(style: str, skill_level: str) -> str:
 def generate_technique_visual(
     user_message: str,
     skill_level: str = "Intermediate",
+    prompt_override: str = "",
 ) -> dict:
     """
     Generate a coaching visual for a single skating technique.
@@ -560,8 +558,14 @@ def generate_technique_visual(
     """
     try:
         technique    = _extract_technique(user_message)
-        image_prompt = _build_technique_prompt(technique, skill_level)
+        image_prompt = prompt_override or _build_technique_prompt(technique, skill_level)
         image_url    = _call_image_api(image_prompt)
+
+        # If the AI-generated prompt was rejected (content policy), fall back to static template
+        if image_url is None and prompt_override:
+            print("[technique_visual] AI prompt rejected — retrying with static template")
+            image_prompt = _build_technique_prompt(technique, skill_level)
+            image_url    = _call_image_api(image_prompt)
 
         if image_url is None:
             return _error_result(
@@ -623,6 +627,7 @@ def generate_trick_breakdown_visuals(
 def generate_corrected_form_visual(
     coaching_summary: str,
     skill_level: str = "Intermediate",
+    prompt_override: str = "",
 ) -> dict:
     """
     Generate a corrected-form visual from Remy's coaching text.
@@ -649,8 +654,13 @@ def generate_corrected_form_visual(
         if not coaching_summary or not coaching_summary.strip():
             return _error_result("corrected_form", "No coaching summary provided.")
 
-        image_prompt = _build_correction_prompt(coaching_summary, skill_level)
+        image_prompt = prompt_override or _build_correction_prompt(coaching_summary, skill_level)
         image_url    = _call_image_api(image_prompt)
+
+        if image_url is None and prompt_override:
+            print("[corrected_form] AI prompt rejected — retrying with static template")
+            image_prompt = _build_correction_prompt(coaching_summary, skill_level)
+            image_url    = _call_image_api(image_prompt)
 
         if image_url is None:
             return _error_result(
@@ -675,6 +685,7 @@ def generate_corrected_form_visual(
 def generate_skate_setup_visual(
     user_message: str,
     skill_level: str = "Intermediate",
+    prompt_override: str = "",
 ) -> dict:
     """
     Generate a visual for a skate setup based on skating style.
@@ -693,8 +704,13 @@ def generate_skate_setup_visual(
     """
     try:
         style        = _extract_setup_style(user_message)
-        image_prompt = _build_setup_prompt(style, skill_level)
+        image_prompt = prompt_override or _build_setup_prompt(style, skill_level)
         image_url    = _call_image_api(image_prompt)
+
+        if image_url is None and prompt_override:
+            print("[setup_visual] AI prompt rejected — retrying with static template")
+            image_prompt = _build_setup_prompt(style, skill_level)
+            image_url    = _call_image_api(image_prompt)
 
         if image_url is None:
             return _error_result(
@@ -720,6 +736,7 @@ def generate_visual(
     user_message: str,
     skill_level: str = "Intermediate",
     coaching_summary: str = "",
+    prompt_override: str = "",
 ) -> dict:
     """
     Master dispatcher — detects which visual type to generate and
@@ -745,13 +762,13 @@ def generate_visual(
     visual_type = _detect_visual_type(user_message)
 
     if visual_type == "setup":
-        return generate_skate_setup_visual(user_message, skill_level)
+        return generate_skate_setup_visual(user_message, skill_level, prompt_override)
     elif visual_type == "breakdown":
         return generate_trick_breakdown_visuals(user_message, skill_level)
     elif visual_type == "correction" and coaching_summary:
-        return generate_corrected_form_visual(coaching_summary, skill_level)
+        return generate_corrected_form_visual(coaching_summary, skill_level, prompt_override)
     else:
-        return generate_technique_visual(user_message, skill_level)
+        return generate_technique_visual(user_message, skill_level, prompt_override)
 
 
 # ─────────────────────────────────────────────
@@ -799,9 +816,10 @@ def render_generated_visual(visual_result: dict) -> None:
     if not visual_result:
         return
 
+    # Debug — print full result to terminal
+    print(f"[render] success={visual_result.get('success')} url={visual_result.get('image_url')} error={visual_result.get('error')}")
+
     if not visual_result.get("success"):
-        # Show the failure reason so the user knows generation was attempted
-        # but did not produce an image — not a silent no-op.
         err = visual_result.get("error", "Unknown error.")
         st.error(
             f"🎨 Visual generation failed — {err}",
@@ -813,6 +831,9 @@ def render_generated_visual(visual_result: dict) -> None:
     desc  = visual_result.get("description", "")
     url   = visual_result.get("image_url")
     steps = visual_result.get("steps", [])
+
+    # Debug — confirm what we're trying to display
+    print(f"[render] displaying image at: {url!r}")
 
     # Section divider
     st.markdown(

@@ -1,6 +1,9 @@
 import os
 import re
 import html
+import json
+import base64
+from pathlib import Path
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 import requests
@@ -711,6 +714,110 @@ def lookup_product_link(product_name: str) -> str:
 
 
 # =========================
+# 🖼️ TECHNIQUE REFERENCE IMAGE SEARCH
+# Fetches a real skating technique image from Google CSE to use as a
+# visual reference when generating DALL-E prompts via Gemini Vision.
+# =========================
+def search_technique_images(query: str, max_results: int = 1) -> list:
+    """Return a list of image URLs for the given skating technique query."""
+    if not GOOGLE_CSE_KEY or not GOOGLE_CSE_CX:
+        return []
+    try:
+        r = requests.get(
+            "https://www.googleapis.com/customsearch/v1",
+            params={
+                "key":        GOOGLE_CSE_KEY,
+                "cx":         GOOGLE_CSE_CX,
+                "q":          query,
+                "searchType": "image",
+                "num":        max_results,
+                "imgSize":    "medium",
+                "safe":       IMAGE_SAFE_SEARCH,
+            },
+            timeout=6,
+        )
+        r.raise_for_status()
+        return [item["link"] for item in r.json().get("items", [])]
+    except Exception as exc:
+        _api_warn("search_technique_images", exc)
+        return []
+
+
+# =========================
+# 🧠 GEMINI-POWERED DALL·E PROMPT GENERATOR
+# Uses a real reference image (if found) + Remy's coaching text to build
+# a detailed, accurate DALL-E 3 prompt via Gemini Vision.
+# Falls back to text-only Gemini prompt if no image is available.
+# =========================
+def _generate_dalle_prompt(user_msg: str, coaching: str, skill: str) -> str:
+    """
+    Build a targeted DALL-E 3 prompt by:
+    1. Searching for a real reference image of the skating technique
+    2. Passing it to Gemini Vision alongside the user's request + coaching text
+    Falls back to a text-only Gemini prompt if no image is found or fetch fails.
+    """
+    ref_image_bytes = None
+
+    # ── Step 1: fetch a reference image ──
+    if GOOGLE_CSE_KEY and GOOGLE_CSE_CX:
+        try:
+            tech_query = f"{user_msg} quad roller skating technique"
+            img_urls = search_technique_images(tech_query, max_results=1)
+            if img_urls:
+                resp = requests.get(img_urls[0], timeout=8)
+                if resp.status_code == 200 and len(resp.content) > 1000:
+                    ref_image_bytes = resp.content
+                    print(f"[DALL·E Prompt] Reference image fetched ({len(ref_image_bytes)} bytes)")
+        except Exception as exc:
+            _api_warn("fetch_reference_image", exc)
+
+    # ── Step 2: call Gemini with or without the reference image ──
+    try:
+        m = genai.GenerativeModel("gemini-2.5-flash")
+
+        context = (
+            f"User's request: {user_msg}\n"
+            f"Coach's guidance: {coaching[:500]}\n"
+            f"Skater skill level: {skill}\n\n"
+            f"Write a DALL-E 3 image generation prompt for a quad roller skating coaching visual. "
+            f"Include: the specific technique being shown, exact body position, foot placement, "
+            f"weight distribution, and any key form details from the coaching guidance. "
+            f"Style: photorealistic or clean coaching illustration, white or rink-blue background, "
+            f"no text overlays. Under 200 words. Output ONLY the prompt, nothing else.\n\n"
+            f"CRITICAL — DALL-E 3 content policy rules you MUST follow:\n"
+            f"- Do NOT mention gender, sex, age, race, nationality, or any appearance descriptors\n"
+            f"- Refer to the subject only as 'a quad roller skater' or 'a skater'\n"
+            f"- Focus entirely on technique, body mechanics, and movement — not the person\n"
+            f"- Keep language neutral and technical\n"
+            f"Violating these rules will cause the image to be rejected."
+        )
+
+        if ref_image_bytes:
+            # Detect image format
+            mime = "image/jpeg"
+            if ref_image_bytes[:4] == b'\x89PNG':
+                mime = "image/png"
+            elif ref_image_bytes[:6] in (b'GIF87a', b'GIF89a'):
+                mime = "image/gif"
+            parts = [
+                {"mime_type": mime, "data": ref_image_bytes},
+                f"This is a real reference photo of the skating technique. "
+                f"Use it to understand the exact body position and movement, "
+                f"then write the prompt.\n\n{context}",
+            ]
+        else:
+            parts = [context]
+
+        resp = m.generate_content(parts)
+        prompt = resp.text.strip()
+        print(f"[DALL·E Prompt] Generated ({len(prompt)} chars): {prompt[:120]}...")
+        return prompt
+    except Exception as exc:
+        _api_warn("dalle_prompt_gen", exc)
+        return ""
+
+
+# =========================
 # 🔎 TRUSTED SOURCE SEARCH
 # Queries Google CSE (restricted to trusted skating sources configured
 # in your Custom Search Engine — NOT general web search).
@@ -1005,12 +1112,74 @@ If the user asks for a skating visual, diagram, setup image, corrected-form imag
 """
 
 # =========================
+# 💾 CHAT HISTORY PERSISTENCE
+# Saves/loads conversation history to disk so Remy remembers past sessions.
+# Images (user uploads + generated visuals) are base64-encoded in JSON.
+# =========================
+HISTORY_FILE = Path(__file__).parent / ".chat_history.json"
+
+
+def _encode_value(v):
+    """Recursively encode bytes → base64 dict for JSON storage."""
+    if isinstance(v, bytes):
+        return {"__b64__": base64.b64encode(v).decode("ascii")}
+    if isinstance(v, dict):
+        return {k: _encode_value(val) for k, val in v.items()}
+    if isinstance(v, list):
+        return [_encode_value(item) for item in v]
+    return v
+
+
+def _decode_value(v):
+    """Recursively decode base64 dicts → bytes when loading from JSON."""
+    if isinstance(v, dict):
+        if "__b64__" in v:
+            return base64.b64decode(v["__b64__"])
+        return {k: _decode_value(val) for k, val in v.items()}
+    if isinstance(v, list):
+        return [_decode_value(item) for item in v]
+    return v
+
+
+def save_chat_history() -> None:
+    """Write current messages to disk."""
+    try:
+        data = _encode_value(st.session_state.messages)
+        HISTORY_FILE.write_text(
+            json.dumps(data, ensure_ascii=False), encoding="utf-8"
+        )
+    except Exception as exc:
+        print(f"[history] save failed: {exc}")
+
+
+def load_chat_history() -> list:
+    """Load messages from disk. Returns [] if file missing or corrupt."""
+    if not HISTORY_FILE.exists():
+        return []
+    try:
+        data = json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
+        return _decode_value(data)
+    except Exception as exc:
+        print(f"[history] load failed: {exc}")
+        return []
+
+
+def clear_chat_history() -> None:
+    """Delete the persisted history file."""
+    try:
+        HISTORY_FILE.unlink(missing_ok=True)
+    except Exception as exc:
+        print(f"[history] clear failed: {exc}")
+
+
+# =========================
 # 💾 SESSION STATE
 # =========================
+_loaded_history = load_chat_history()
 _STATE_DEFAULTS = {
     "chat":               None,
-    "messages":           [],
-    "msg_count":          0,
+    "messages":           _loaded_history,
+    "msg_count":          len(_loaded_history),
     "skill_level":        "Intermediate",
     "pending_image":      None,
     "pending_image_name": None,
@@ -1055,7 +1224,16 @@ def init_model() -> None:
         system_instruction=system,
         generation_config=generation_config,
     )
-    st.session_state.chat = m.start_chat()
+    # Rebuild Gemini's conversation context from saved history (text only,
+    # last 20 messages so we don't bloat the context window on long sessions).
+    gemini_history = []
+    for msg in st.session_state.messages[-20:]:
+        role = "user" if msg["role"] == "user" else "model"
+        text = msg.get("content", "")
+        if text:
+            gemini_history.append({"role": role, "parts": [text]})
+
+    st.session_state.chat = m.start_chat(history=gemini_history)
 
 if st.session_state.chat is None:
     init_model()
@@ -1142,6 +1320,7 @@ with st.sidebar:
     st.markdown("---")
 
     if st.button("🔄 Reset Session", key="reset_session_btn_main"):
+        clear_chat_history()
         st.session_state.chat             = None
         st.session_state.messages         = []
         st.session_state.msg_count        = 0
@@ -1466,6 +1645,7 @@ if final_input:
 
     st.session_state.messages.append(user_msg)
     st.session_state.msg_count += 1
+    save_chat_history()
 
     with st.chat_message("user"):
         if img_bytes:
@@ -1585,6 +1765,11 @@ if final_input:
         full_response = ""
         resolved      = None   # will hold the resolved response after streaming
         visual_result = None
+        should_generate_visual = False
+        clean_text    = ""
+        yt_queries    = []
+        skate_queries = []
+        search_queries = []
 
         with st.chat_message("assistant", avatar="🛼"):
             if search_status:
@@ -1649,20 +1834,36 @@ if final_input:
             # source cards below his answer (second-pass enrichment for display).
             render_rich_cards(yt_queries, skate_queries, search_queries)
 
-            # ── Generated Visuals ──
+            # ── Generated Visuals — flag only; generate outside this block ──
+            # Generating inside a with-chat_message block causes a race condition:
+            # Streamlit reruns triggered by spinners discard this render context,
+            # so the image never appears. We flag here and generate below.
             should_generate_visual = (
                 should_trigger_generated_visual(final_input)
                 or st.session_state.force_generate_visual
             )
-
             if should_generate_visual:
+                st.markdown(
+                    "<div style='font-size:0.75rem;color:#6a85a8;margin-top:8px;'>"
+                    "🎨 Generating visual coaching image…</div>",
+                    unsafe_allow_html=True,
+                )
+
+        # ── Generate visual OUTSIDE the chat bubble ──
+        # This ensures the image is in session state before rerun, so the
+        # history loop renders it reliably in the correct message bubble.
+        if should_generate_visual:
+            with st.spinner("🎨 Searching references and generating your visual..."):
+                dalle_prompt = _generate_dalle_prompt(
+                    final_input, clean_text, st.session_state.skill_level
+                )
                 visual_result = generate_visual(
                     user_message=final_input,
                     skill_level=st.session_state.skill_level,
                     coaching_summary=clean_text,
+                    prompt_override=dalle_prompt,
                 )
-                render_generated_visual(visual_result)
-                st.session_state.force_generate_visual = False
+            st.session_state.force_generate_visual = False
 
         st.session_state.messages.append({
             "role":           "assistant",
@@ -1672,6 +1873,11 @@ if final_input:
             "search_queries": search_queries,
             "visual_result":  visual_result,
         })
+        save_chat_history()
+
+        # Rerun so the history loop renders the image in the correct bubble
+        if visual_result:
+            st.rerun()
 
     except Exception as exc:
         st.error(f"Remy hit a snag — {type(exc).__name__}: {exc}")
